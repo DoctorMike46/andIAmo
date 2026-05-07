@@ -1,0 +1,51 @@
+name: andiamo
+
+services:
+  api:
+    image: ${IMAGE:-ghcr.io/andiamo/backend:latest}
+    container_name: andiamo-api
+    restart: unless-stopped
+    env_file: ../backend/.env
+    expose:
+      - "8000"
+    depends_on:
+      - redis
+
+  worker:
+    image: ${IMAGE:-ghcr.io/andiamo/backend:latest}
+    container_name: andiamo-worker
+    restart: unless-stopped
+    env_file: ../backend/.env
+    command: ["uv", "run", "--no-dev", "arq", "app.workers.main.WorkerSettings"]
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: andiamo-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: andiamo-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+
+# NOTE: in production, Postgres lives outside this compose stack
+# (Hetzner managed Postgres or a dedicated VPS). Object storage uses
+# Hetzner Object Storage or Backblaze B2 — credentials in backend/.env.
+
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:
