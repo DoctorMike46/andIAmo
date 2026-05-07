@@ -14,27 +14,32 @@ jobs:
   backend:
     name: Backend (smoke)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
-
-    services:
-      postgres:
-        image: imresamu/postgis-pgvector:16-3.4-0.7.4
-        env:
-          POSTGRES_USER: andiamo
-          POSTGRES_PASSWORD: andiamo
-          POSTGRES_DB: andiamo_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U andiamo"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Build Postgres image (PostGIS + pgvector)
+        run: docker build -t andiamo-pg infra/postgres
+
+      - name: Start Postgres
+        run: |
+          docker run -d --name pg \
+            -e POSTGRES_USER=andiamo \
+            -e POSTGRES_PASSWORD=andiamo \
+            -e POSTGRES_DB=andiamo_test \
+            -p 5432:5432 \
+            andiamo-pg
+
+          for i in $(seq 1 30); do
+            if docker exec pg pg_isready -U andiamo -d andiamo_test >/dev/null 2>&1; then
+              echo "postgres ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "postgres did not become ready in time"
+          docker logs pg
+          exit 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -45,9 +50,11 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
+        working-directory: backend
         run: uv sync
 
       - name: Apply migrations
+        working-directory: backend
         env:
           APP_SECRET_KEY: test-secret-test-secret-test-secret
           JWT_SECRET: test-jwt-secret-test-jwt-secret
@@ -56,6 +63,7 @@ jobs:
         run: uv run alembic upgrade head
 
       - name: Lint (ruff, advisory)
+        working-directory: backend
         run: uv run ruff check . || true
 
   mobile:
