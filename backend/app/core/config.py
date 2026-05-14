@@ -33,8 +33,9 @@ class Settings(BaseSettings):
     s3_secret_access_key: str = ""
     s3_bucket: str = "andiamo-media"
 
-    anthropic_api_key: str = ""
-    voyage_api_key: str = ""
+    openai_api_key: str = ""
+    openai_chat_model: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-small"
 
     smtp_host: str = "localhost"
     smtp_port: int = 1025

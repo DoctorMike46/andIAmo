@@ -1,14 +1,15 @@
 from datetime import datetime, time
+from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from geoalchemy2 import Geography
 from geoalchemy2.functions import ST_AsText, ST_Distance, ST_DWithin, ST_GeomFromText
-from sqlalchemy import and_, cast, exists, or_, select
+from sqlalchemy import cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.locale import Locale, OpeningHours
+from app.models.locale import Locale
 from app.models.recommendation_log import RecommendationLog
 from app.recommender.engine import (
     LocaleCandidate,
@@ -20,7 +21,9 @@ from app.recommender.engine import (
 )
 from app.schemas.locale import LocaleSummary
 from app.schemas.recommendation import RecommendationOut
+from app.services import weather as weather_service
 from app.services.locales import _parse_point  # reuse helper
+from app.services.opening_hours import is_open_at_clause
 from app.services.preferences import get_preferences
 
 _ROME_TZ = ZoneInfo("Europe/Rome")
@@ -39,20 +42,32 @@ async def recommend_tonight(
     lng: float | None,
     when: datetime | None,
     limit: int = _DEFAULT_LIMIT,
+    prefs_override: dict[str, Any] | None = None,
 ) -> list[RecommendationOut]:
+    """Run the recommender for the user. Optional `prefs_override` lets callers
+    (e.g. the AI Concierge) substitute individual preference fields for a
+    one-off query without persisting them on the user's profile.
+    """
     when_local = (when or datetime.now(_ROME_TZ)).astimezone(_ROME_TZ)
     weekday = when_local.weekday()
     now_time = when_local.time().replace(microsecond=0)
 
     prefs = await get_preferences(session, user_id=user_id)
     user_embedding = list(prefs.embedding) if prefs and prefs.embedding is not None else None
+    override = prefs_override or {}
+
+    def _get(field: str, default: Any) -> Any:
+        if field in override and override[field] is not None:
+            return override[field]
+        return getattr(prefs, field) if prefs else default
+
     ctx = UserContext(
-        moods=prefs.moods if prefs else [],
-        cuisines=prefs.cuisines if prefs else [],
-        dietary=prefs.dietary if prefs else [],
-        avoid_types=prefs.avoid_types if prefs else [],
-        budget_max=prefs.budget_max if prefs else 4,
-        max_distance_km=prefs.max_distance_km if prefs else 5.0,
+        moods=_get("moods", []),
+        cuisines=_get("cuisines", []),
+        dietary=_get("dietary", []),
+        avoid_types=_get("avoid_types", []),
+        budget_max=_get("budget_max", 4),
+        max_distance_km=_get("max_distance_km", 5.0),
         embedding=user_embedding,
     )
 
@@ -91,30 +106,7 @@ async def recommend_tonight(
         stmt = stmt.where(Locale.type.not_in(ctx.avoid_types))
 
     # Hard filter "open at the requested time".
-    prev_weekday = (weekday - 1) % 7
-    stmt = stmt.where(
-        exists().where(
-            and_(
-                OpeningHours.locale_id == Locale.id,
-                OpeningHours.closed_all_day.is_(False),
-                or_(
-                    # Normal: today open before now, closes after now.
-                    and_(
-                        OpeningHours.weekday == weekday,
-                        OpeningHours.open_time <= now_time,
-                        OpeningHours.close_time > now_time,
-                    ),
-                    # Cross-midnight: opened yesterday with close < open (after midnight),
-                    # and we're still inside the post-midnight tail.
-                    and_(
-                        OpeningHours.weekday == prev_weekday,
-                        OpeningHours.close_time < OpeningHours.open_time,
-                        OpeningHours.close_time > now_time,
-                    ),
-                ),
-            )
-        )
-    )
+    stmt = stmt.where(is_open_at_clause(weekday, now_time))
     stmt = stmt.limit(200)  # cap candidates before scoring
 
     result = await session.execute(stmt)
@@ -140,8 +132,33 @@ async def recommend_tonight(
         scored_locale = score_locale(candidate, ctx, window=window, now=now_time)
         scored.append((scored_locale, locale, wkt, distance_m))
 
-    scored.sort(key=lambda x: x[0].score, reverse=True)
-    top = scored[:limit]
+    # Weather-aware nudge: only if a location point is provided.
+    snapshot = (
+        await weather_service.get_weather(lat, lng)
+        if lat is not None and lng is not None
+        else None
+    )
+
+    rescored: list[tuple[ScoredLocale, Locale, str, float | None]] = []
+    for sl, locale, wkt, distance_m in scored:
+        outdoor = weather_service.has_outdoor_hint(locale.description, locale.name)
+        boost, weather_reason = weather_service.weather_boost(snapshot, outdoor)
+        if boost == 0.0:
+            rescored.append((sl, locale, wkt, distance_m))
+            continue
+        new_score = max(0.0, min(1.0, sl.score * (1.0 + boost)))
+        new_reasons = list(sl.reasons)
+        if weather_reason and weather_reason not in new_reasons:
+            new_reasons.append(weather_reason)
+        boosted = ScoredLocale(
+            locale_id=sl.locale_id,
+            score=round(new_score, 4),
+            reasons=new_reasons,
+        )
+        rescored.append((boosted, locale, wkt, distance_m))
+
+    rescored.sort(key=lambda x: x[0].score, reverse=True)
+    top = rescored[:limit]
 
     log = RecommendationLog(
         user_id=user_id,
@@ -250,30 +267,7 @@ async def recommend_for_group(
         )
     if ctx.avoid_types:
         stmt = stmt.where(Locale.type.not_in(ctx.avoid_types))
-    prev_weekday = (weekday - 1) % 7
-    stmt = stmt.where(
-        exists().where(
-            and_(
-                OpeningHours.locale_id == Locale.id,
-                OpeningHours.closed_all_day.is_(False),
-                or_(
-                    # Normal: today open before now, closes after now.
-                    and_(
-                        OpeningHours.weekday == weekday,
-                        OpeningHours.open_time <= now_time,
-                        OpeningHours.close_time > now_time,
-                    ),
-                    # Cross-midnight: opened yesterday with close < open (after midnight),
-                    # and we're still inside the post-midnight tail.
-                    and_(
-                        OpeningHours.weekday == prev_weekday,
-                        OpeningHours.close_time < OpeningHours.open_time,
-                        OpeningHours.close_time > now_time,
-                    ),
-                ),
-            )
-        )
-    )
+    stmt = stmt.where(is_open_at_clause(weekday, now_time))
     stmt = stmt.limit(200)
 
     result = await session.execute(stmt)

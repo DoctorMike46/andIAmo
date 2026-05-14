@@ -47,7 +47,7 @@ cp .env.example .env
 uv sync
 uv run alembic upgrade head
 uv run python -m app.cli.seed       # 10 locali di prova (Roma + Milano)
-uv run python -m app.cli.embed_locales   # categorizza + embedda (mock se ANTHROPIC_API_KEY è vuota)
+uv run python -m app.cli.embed_locales   # categorizza + embedda (mock se OPENAI_API_KEY è vuota)
 uv run uvicorn app.main:app --reload
 ```
 
@@ -78,14 +78,15 @@ Da quel momento, il pannello "Admin · Gestisci locali" appare nel profilo.
 
 Il file `.env` di esempio funziona out-of-the-box per dev. Le sole chiavi opzionali interessanti sono:
 
-- `ANTHROPIC_API_KEY` — se valorizzata, l'AI mediator e la categorizzazione locali usano Claude vero. Se vuota, vengono usati fallback deterministici.
-- `VOYAGE_API_KEY` — embedding reali da `voyage-3`. Se vuota, embedding mock derivati da SHA-256 (utili per validare la pipeline).
+- `OPENAI_API_KEY` — se valorizzata, vengono usati modelli OpenAI veri sia per gli embedding (`text-embedding-3-small` a 1024 dim) sia per la categorizzazione locali e l'AI mediator (`gpt-4o-mini`). Se vuota, vengono usati fallback deterministici (descrittori a preset + embedding mock derivati da SHA-256, utili per validare la pipeline).
+- `OPENAI_CHAT_MODEL` — opzionale, default `gpt-4o-mini`. Cambia per usare un altro modello (es. `gpt-4.1-mini`, `gpt-4o`).
+- `OPENAI_EMBEDDING_MODEL` — opzionale, default `text-embedding-3-small`. La dimensione è fissata a 1024 per allinearsi alla colonna `Vector(1024)`.
 
 Lavorare in mock-mode è perfettamente funzionale per sviluppare e testare il flow, semplicemente la qualità del ranking AI è meno significativa.
 
 ## Stack
 
-Backend: FastAPI, SQLAlchemy 2.0 async, asyncpg, Alembic, PostGIS, pgvector, GeoAlchemy2, Pydantic v2, Argon2, PyJWT, boto3 (per MinIO/S3), Anthropic SDK, Voyage AI SDK.
+Backend: FastAPI, SQLAlchemy 2.0 async, asyncpg, Alembic, PostGIS, pgvector, GeoAlchemy2, Pydantic v2, Argon2, PyJWT, boto3 (per MinIO/S3), OpenAI SDK (chat + embeddings).
 
 Mobile: Flutter 3.41, Riverpod, go_router, Dio, flutter_map (OSM), flutter_secure_storage, image_picker, geolocator, url_launcher, google_fonts (Inter), cached_network_image.
 

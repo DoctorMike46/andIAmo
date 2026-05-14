@@ -35,7 +35,7 @@ async def upsert_preferences(
     await session.refresh(existing)
 
     # Refresh AI profile vector. With mock embeddings this is instantaneous;
-    # with real Voyage it adds ~200-500ms. Acceptable for onboarding/update flows.
+    # with real OpenAI it adds ~200-500ms. Acceptable for onboarding/update flows.
     from app.ai.user_profile import embed_user_preferences
 
     await embed_user_preferences(session, existing)

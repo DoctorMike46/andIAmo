@@ -8,6 +8,7 @@ import 'features/admin/admin_locales_screen.dart';
 import 'features/auth/auth_controller.dart';
 import 'features/auth/login_screen.dart';
 import 'features/auth/register_screen.dart';
+import 'features/concierge/concierge_screen.dart';
 import 'features/favorites/favorites_screen.dart';
 import 'features/friends/friends_screen.dart';
 import 'features/locales/esplora_screen.dart';
@@ -61,7 +62,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
         builder: (_, __) => const OnboardingScreen(),
       ),
 
-      // Bottom-nav shell with 4 tabs.
+      // Bottom-nav shell with 5 tabs.
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) =>
             MainShell(navigationShell: navigationShell),
@@ -72,6 +73,15 @@ final appRouterProvider = Provider<GoRouter>((ref) {
                 path: '/esplora',
                 name: 'esplora',
                 builder: (_, __) => const EsploraScreen(),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/concierge',
+                name: 'concierge',
+                builder: (_, __) => const ConciergeScreen(),
               ),
             ],
           ),

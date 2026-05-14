@@ -1,8 +1,13 @@
-"""Voyage AI embeddings wrapper with deterministic mock fallback.
+"""OpenAI embeddings wrapper with deterministic mock fallback.
 
-When VOYAGE_API_KEY is empty the mock returns an L2-normalized 1024-dim vector
+When OPENAI_API_KEY is empty the mock returns an L2-normalized 1024-dim vector
 deterministically derived from a SHA-256 hash of the input. Same input → same
 vector, so cosine similarity remains stable across runs even without real keys.
+
+We use `text-embedding-3-small` with `dimensions=1024` so the result matches
+the `Vector(1024)` column in the database without any schema migration.
+OpenAI's Matryoshka-trained embeddings remain semantically meaningful when
+truncated below their native 1536 dimensions.
 """
 import hashlib
 import math
@@ -11,6 +16,8 @@ from typing import Literal
 from app.core.config import settings
 
 EmbeddingDim: int = 1024
+# Kept for backward-compatible call sites; OpenAI doesn't distinguish the two,
+# so the parameter is currently informational only.
 InputType = Literal["document", "query"]
 
 
@@ -47,25 +54,26 @@ def _mock_embed(text: str) -> list[float]:
 async def embed_text(text: str, *, input_type: InputType = "document") -> list[float]:
     """Return a 1024-dim embedding for the given text.
 
-    Uses Voyage `voyage-3` when VOYAGE_API_KEY is set; otherwise returns a
-    deterministic mock vector. Always L2-normalized.
+    Uses OpenAI `text-embedding-3-small` (truncated to 1024 dim) when
+    OPENAI_API_KEY is set; otherwise returns a deterministic mock vector.
+    Always L2-normalized.
     """
-    if not settings.voyage_api_key:
+    del input_type  # accepted for API stability; OpenAI doesn't use it
+    if not settings.openai_api_key:
         return _mock_embed(text)
 
-    import voyageai  # local import: only required when running with real keys
+    from openai import AsyncOpenAI
 
-    client = voyageai.AsyncClient(api_key=settings.voyage_api_key)
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
     try:
-        result = await client.embed(
-            texts=[text],
-            model="voyage-3",
-            input_type=input_type,
-            output_dimension=EmbeddingDim,
+        result = await client.embeddings.create(
+            model=settings.openai_embedding_model,
+            input=text,
+            dimensions=EmbeddingDim,
         )
-    except Exception as exc:  # noqa: BLE001 — surface as EmbeddingError
-        raise EmbeddingError(f"voyage embed failed: {exc}") from exc
-    return _l2_normalize(result.embeddings[0])
+    except Exception as exc:
+        raise EmbeddingError(f"openai embed failed: {exc}") from exc
+    return _l2_normalize(result.data[0].embedding)
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

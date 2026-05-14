@@ -1,8 +1,8 @@
-"""Pipeline: locale → Claude descriptor → embedding → save on locale.embedding."""
+"""Pipeline: locale → LLM descriptor → embedding → save on locale.embedding."""
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ai.claude_client import describe_locale
 from app.ai.embeddings import embed_text
+from app.ai.llm_client import describe_locale
 from app.models.locale import Locale
 
 

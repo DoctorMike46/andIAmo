@@ -3,7 +3,7 @@
 Given an outing, its participants' preferences, current votes and the group
 recommendations, produce a single suggestion with a human-readable rationale.
 
-Falls back to a deterministic heuristic when ANTHROPIC_API_KEY is empty.
+Falls back to a deterministic heuristic when OPENAI_API_KEY is empty.
 """
 from dataclasses import dataclass
 from uuid import UUID
@@ -72,13 +72,13 @@ async def mediate_outing(
             f"- utente {str(uid)[:8]}: cucine [{cuisines}], mood [{moods}], budget {prefs.budget_max}"
         )
 
-    if settings.anthropic_api_key:
+    if settings.openai_api_key:
         try:
-            rationale = await _claude_rationale(
+            rationale = await _openai_rationale(
                 pick=pick, candidates=candidates, votes=votes, profile=profile_lines
             )
             return MediationResult(suggested_locale_id=pick.id, rationale=rationale)
-        except Exception:  # noqa: BLE001 — fall back to deterministic rationale
+        except Exception:
             pass
 
     return MediationResult(
@@ -110,17 +110,17 @@ def _mock_rationale(
     return " ".join(parts)
 
 
-async def _claude_rationale(
+async def _openai_rationale(
     *,
     pick: RecommendationOut,
     candidates: list[RecommendationOut],
     votes: list,
     profile: list[str],
 ) -> str:
-    """Ask Claude to write the rationale. Only invoked when API key is set."""
-    from anthropic import AsyncAnthropic
+    """Ask OpenAI to write the rationale. Only invoked when API key is set."""
+    from openai import AsyncOpenAI
 
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
     profile_str = "\n".join(profile) if profile else "(nessun profilo)"
     options_str = "\n".join(
         f"- {c.name} ({c.type}, {c.city}) score={c.score} reasons={c.reasons}"
@@ -144,12 +144,12 @@ async def _claude_rationale(
         f"PROPOSTA: {pick.name} ({pick.type}, {pick.city})"
     )
 
-    message = await client.messages.create(
-        model="claude-sonnet-4-6",
+    completion = await client.chat.completions.create(
+        model=settings.openai_chat_model,
         max_tokens=300,
-        system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_msg}],
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ],
     )
-    return "".join(
-        b.text for b in message.content if getattr(b, "type", "") == "text"
-    ).strip()
+    return (completion.choices[0].message.content or "").strip()

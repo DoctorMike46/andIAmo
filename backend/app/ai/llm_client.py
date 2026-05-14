@@ -1,6 +1,6 @@
-"""Claude (Anthropic) wrapper with deterministic mock fallback.
+"""OpenAI LLM wrapper with deterministic mock fallback.
 
-When ANTHROPIC_API_KEY is empty the mock returns a structured descriptor
+When OPENAI_API_KEY is empty the mock returns a structured descriptor
 derived from the locale type/name — enough to drive the rest of the pipeline
 during development without spending API credits.
 """
@@ -12,8 +12,6 @@ from app.core.config import settings
 
 _PROMPT_VERSION = "v1.0"
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-
-_MODEL = "claude-sonnet-4-6"
 
 
 @dataclass(frozen=True)
@@ -38,7 +36,7 @@ class LocaleDescriptor:
         return "\n".join(parts)
 
 
-class ClaudeError(Exception):
+class LLMError(Exception):
     pass
 
 
@@ -130,42 +128,37 @@ def _mock_descriptor(locale_meta: dict[str, Any]) -> LocaleDescriptor:
 async def describe_locale(locale_meta: dict[str, Any]) -> LocaleDescriptor:
     """Produce a structured LocaleDescriptor for the given locale metadata.
 
-    Falls back to a deterministic mock when ANTHROPIC_API_KEY is empty.
+    Falls back to a deterministic mock when OPENAI_API_KEY is empty.
     """
-    if not settings.anthropic_api_key:
+    if not settings.openai_api_key:
         return _mock_descriptor(locale_meta)
 
     import json
 
-    from anthropic import AsyncAnthropic
+    from openai import AsyncOpenAI
 
-    client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
     system_prompt = _load_system_prompt()
     user_payload = json.dumps(locale_meta, ensure_ascii=False)
 
     try:
-        message = await client.messages.create(
-            model=_MODEL,
+        completion = await client.chat.completions.create(
+            model=settings.openai_chat_model,
             max_tokens=600,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
             ],
-            messages=[{"role": "user", "content": user_payload}],
         )
-    except Exception as exc:  # noqa: BLE001
-        raise ClaudeError(f"anthropic call failed: {exc}") from exc
+    except Exception as exc:
+        raise LLMError(f"openai call failed: {exc}") from exc
 
-    text = "".join(
-        block.text for block in message.content if getattr(block, "type", "") == "text"
-    ).strip()
+    text = (completion.choices[0].message.content or "").strip()
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ClaudeError(f"claude returned non-JSON: {text[:200]}") from exc
+        raise LLMError(f"openai returned non-JSON: {text[:200]}") from exc
 
     return LocaleDescriptor(
         cuisine_tags=list(data.get("cuisine_tags", [])),

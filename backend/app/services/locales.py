@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 from geoalchemy2 import Geography
 from geoalchemy2.functions import ST_AsText, ST_Distance, ST_DWithin, ST_GeomFromText
-from sqlalchemy import and_, cast, delete, exists, or_, select
+from sqlalchemy import cast, delete, select
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,6 +17,7 @@ from app.schemas.locale import (
     LocaleWrite,
     OpeningHoursOut,
 )
+from app.services.opening_hours import is_open_at_clause
 
 _ROME_TZ = ZoneInfo("Europe/Rome")
 
@@ -109,29 +110,8 @@ async def list_locales(
 
     if open_now:
         now_local = datetime.now(_ROME_TZ)
-        weekday = now_local.weekday()
-        prev_weekday = (weekday - 1) % 7
         now_time = now_local.time().replace(microsecond=0)
-        stmt = stmt.where(
-            exists().where(
-                and_(
-                    OpeningHours.locale_id == Locale.id,
-                    OpeningHours.closed_all_day.is_(False),
-                    or_(
-                        and_(
-                            OpeningHours.weekday == weekday,
-                            OpeningHours.open_time <= now_time,
-                            OpeningHours.close_time > now_time,
-                        ),
-                        and_(
-                            OpeningHours.weekday == prev_weekday,
-                            OpeningHours.close_time < OpeningHours.open_time,
-                            OpeningHours.close_time > now_time,
-                        ),
-                    ),
-                )
-            )
-        )
+        stmt = stmt.where(is_open_at_clause(now_local.weekday(), now_time))
 
     if distance_col is not None:
         stmt = stmt.order_by(distance_col)

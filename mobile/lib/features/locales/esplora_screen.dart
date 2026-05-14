@@ -1,4 +1,5 @@
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,9 +8,15 @@ import 'package:latlong2/latlong.dart';
 
 import '../../core/location/location_service.dart';
 import '../../core/widgets/empty_state.dart';
+import '../../core/widgets/glass_sheet.dart';
+import '../../core/widgets/shimmer.dart';
+import '../../shared/utils/format.dart';
+import '../favorites/data/favorites_api.dart';
 import '../favorites/widgets/favorite_button.dart';
 import '../recommendations/data/recommendation_models.dart';
 import '../recommendations/data/recommendations_api.dart';
+import '../recommendations/widgets/recommendation_deck.dart';
+import '../weather/widgets/weather_chip.dart';
 import 'data/locale_models.dart';
 import 'locales_controller.dart';
 
@@ -20,13 +27,45 @@ class EsploraScreen extends ConsumerStatefulWidget {
   ConsumerState<EsploraScreen> createState() => _EsploraScreenState();
 }
 
-enum _ViewMode { list, map }
+enum _ViewMode { deck, list, map }
 
 enum _Source { tonight, all }
 
 class _EsploraScreenState extends ConsumerState<EsploraScreen> {
-  _ViewMode _mode = _ViewMode.list;
+  _ViewMode _mode = _ViewMode.deck;
   _Source _source = _Source.tonight;
+
+  void _setSource(_Source s) {
+    setState(() {
+      _source = s;
+      // "Tutti" non ha il deck (le entries non hanno score/reasons): cadi su list.
+      if (s == _Source.all && _mode == _ViewMode.deck) {
+        _mode = _ViewMode.list;
+      }
+      if (s == _Source.tonight && _mode == _ViewMode.list) {
+        _mode = _ViewMode.deck;
+      }
+    });
+  }
+
+  IconData _nextModeIcon() {
+    if (_source == _Source.tonight) {
+      return _mode == _ViewMode.deck
+          ? Icons.map_outlined
+          : Icons.style_outlined;
+    }
+    return _mode == _ViewMode.list ? Icons.map_outlined : Icons.list;
+  }
+
+  void _cycleMode() {
+    setState(() {
+      if (_source == _Source.tonight) {
+        _mode = _mode == _ViewMode.deck ? _ViewMode.map : _ViewMode.deck;
+      } else {
+        _mode = _mode == _ViewMode.list ? _ViewMode.map : _ViewMode.list;
+      }
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -48,11 +87,9 @@ class _EsploraScreenState extends ConsumerState<EsploraScreen> {
             },
           ),
           IconButton(
-            tooltip: _mode == _ViewMode.list ? 'Mappa' : 'Lista',
-            icon: Icon(_mode == _ViewMode.list ? Icons.map_outlined : Icons.list),
-            onPressed: () => setState(() {
-              _mode = _mode == _ViewMode.list ? _ViewMode.map : _ViewMode.list;
-            }),
+            tooltip: 'Cambia vista',
+            icon: Icon(_nextModeIcon()),
+            onPressed: _cycleMode,
           ),
         ],
       ),
@@ -60,8 +97,9 @@ class _EsploraScreenState extends ConsumerState<EsploraScreen> {
         children: [
           _SourceToggle(
             source: _source,
-            onChanged: (s) => setState(() => _source = s),
+            onChanged: _setSource,
           ),
+          const WeatherChip(),
           const _LocationChip(),
           if (_source == _Source.all)
             _FilterBar(
@@ -71,17 +109,21 @@ class _EsploraScreenState extends ConsumerState<EsploraScreen> {
           Expanded(
             child: _source == _Source.tonight
                 ? asyncTonight.when(
-                    data: (recs) => _mode == _ViewMode.list
-                        ? _RecommendationsList(items: recs)
-                        : _LocalesMap(locales: recs),
-                    loading: () => const Center(child: CircularProgressIndicator()),
+                    data: (recs) => switch (_mode) {
+                      _ViewMode.deck => _RecommendationsDeck(items: recs),
+                      _ViewMode.list => _RecommendationsList(items: recs),
+                      _ViewMode.map => _LocalesMap(locales: recs),
+                    },
+                    loading: () => _mode == _ViewMode.deck
+                        ? const DeckCardSkeleton()
+                        : const TonightListSkeleton(),
                     error: (e, _) => _ErrorBox(error: e),
                   )
                 : asyncAll.when(
-                    data: (locales) => _mode == _ViewMode.list
-                        ? _LocalesList(locales: locales)
-                        : _LocalesMap(locales: locales),
-                    loading: () => const Center(child: CircularProgressIndicator()),
+                    data: (locales) => _mode == _ViewMode.map
+                        ? _LocalesMap(locales: locales)
+                        : _LocalesList(locales: locales),
+                    loading: () => const TonightListSkeleton(),
                     error: (e, _) => _ErrorBox(error: e),
                   ),
           ),
@@ -237,18 +279,21 @@ class _LocaleTile extends StatelessWidget {
               child: SizedBox(
                 width: 100,
                 height: 110,
-                child: locale.primaryMediaUrl != null
-                    ? CachedNetworkImage(
-                        imageUrl: locale.primaryMediaUrl!,
-                        fit: BoxFit.cover,
-                        placeholder: (_, __) => Container(color: Colors.black12),
-                        errorWidget: (_, __, ___) =>
-                            const Icon(Icons.broken_image_outlined),
-                      )
-                    : Container(
-                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                        child: const Icon(Icons.storefront, size: 36),
-                      ),
+                child: Hero(
+                  tag: 'locale-image-${locale.id}',
+                  child: locale.primaryMediaUrl != null
+                      ? CachedNetworkImage(
+                          imageUrl: locale.primaryMediaUrl!,
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) => Container(color: Colors.black12),
+                          errorWidget: (_, __, ___) =>
+                              const Icon(Icons.broken_image_outlined),
+                        )
+                      : Container(
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                          child: const Icon(Icons.storefront, size: 36),
+                        ),
+                ),
               ),
             ),
             Expanded(
@@ -288,7 +333,7 @@ class _LocaleTile extends StatelessWidget {
                             style: const TextStyle(fontWeight: FontWeight.w600)),
                         const Spacer(),
                         if (locale.distanceM != null)
-                          Text(_formatDistance(locale.distanceM!)),
+                          Text(formatWalkingTime(locale.distanceM!)),
                       ],
                     ),
                     if (reasons != null && reasons!.isNotEmpty) ...[
@@ -358,6 +403,57 @@ class _LocalesList extends StatelessWidget {
   }
 }
 
+class _RecommendationsDeck extends ConsumerWidget {
+  const _RecommendationsDeck({required this.items});
+  final List<Recommendation> items;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (items.isEmpty) {
+      return const EmptyState(
+        icon: Icons.auto_awesome_outlined,
+        title: 'Nessun consiglio per stasera',
+        message:
+            'Prova ad allargare il raggio, alzare il budget o aggiornare le preferenze nel profilo.',
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 8, 0, 88),
+      child: RecommendationDeck(
+        items: items,
+        onEmptyAction: () => ref.invalidate(tonightRecommendationsProvider),
+        onLiked: (rec) => _saveToFavorites(context, ref, rec),
+      ),
+    );
+  }
+
+  Future<void> _saveToFavorites(
+      BuildContext context, WidgetRef ref, Recommendation rec) async {
+    final api = ref.read(favoritesApiProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    try {
+      await api.add(rec.id);
+      ref.invalidate(favoritesListProvider);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.favorite, color: scheme.onInverseSurface, size: 18),
+              const SizedBox(width: 8),
+              Expanded(child: Text('${rec.name} salvato in Preferiti')),
+            ],
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } on DioException {
+      // Already favorited or transient error: stay silent — the swipe still
+      // advances the deck. We don't want a red banner over every duplicate.
+    }
+  }
+}
+
 class _RecommendationsList extends StatelessWidget {
   const _RecommendationsList({required this.items});
   final List<Recommendation> items;
@@ -410,7 +506,11 @@ class _LocalesMap extends StatelessWidget {
                 width: 40,
                 height: 40,
                 child: GestureDetector(
-                  onTap: () => context.push('/locales/${l.id}'),
+                  onTap: () => showGlassBottomSheet<void>(
+                    context,
+                    isScrollControlled: true,
+                    builder: (_) => _MapPreviewSheet(locale: l),
+                  ),
                   child: Icon(Icons.location_on,
                       size: 36, color: Theme.of(context).colorScheme.primary),
                 ),
@@ -422,7 +522,100 @@ class _LocalesMap extends StatelessWidget {
   }
 }
 
-String _formatDistance(double meters) {
-  if (meters < 1000) return '${meters.toStringAsFixed(0)} m';
-  return '${(meters / 1000).toStringAsFixed(1)} km';
+class _MapPreviewSheet extends StatelessWidget {
+  const _MapPreviewSheet({required this.locale});
+  final LocaleSummary locale;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: SizedBox(
+              height: 140,
+              child: Hero(
+                tag: 'locale-image-${locale.id}',
+                child: locale.primaryMediaUrl != null
+                    ? CachedNetworkImage(
+                        imageUrl: locale.primaryMediaUrl!,
+                        fit: BoxFit.cover,
+                        placeholder: (_, __) =>
+                            Container(color: scheme.surfaceContainerHigh),
+                        errorWidget: (_, __, ___) => Container(
+                          color: scheme.surfaceContainerHigh,
+                          alignment: Alignment.center,
+                          child: const Icon(Icons.storefront, size: 32),
+                        ),
+                      )
+                    : Container(
+                        color: scheme.surfaceContainerHigh,
+                        alignment: Alignment.center,
+                        child: const Icon(Icons.storefront, size: 32),
+                      ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(locale.name,
+                        style: Theme.of(context).textTheme.titleLarge,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                    Text('${locale.type} · ${locale.city}',
+                        style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              ),
+              FavoriteButton(localeId: locale.id),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (locale.rating != null) ...[
+                const Icon(Icons.star, size: 16, color: Colors.amber),
+                const SizedBox(width: 4),
+                Text(locale.rating!.toStringAsFixed(1)),
+                const SizedBox(width: 12),
+              ],
+              Text('€' * locale.priceLevel,
+                  style: const TextStyle(fontWeight: FontWeight.w600)),
+              if (locale.distanceM != null) ...[
+                const SizedBox(width: 12),
+                Icon(Icons.directions_walk,
+                    size: 14, color: scheme.onSurfaceVariant),
+                const SizedBox(width: 4),
+                Text(
+                  formatWalkingTime(locale.distanceM!),
+                  style: TextStyle(
+                      fontSize: 13, color: scheme.onSurfaceVariant),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.of(context).pop();
+              context.push('/locales/${locale.id}');
+            },
+            icon: const Icon(Icons.arrow_forward),
+            label: const Text('Apri dettagli'),
+          ),
+        ],
+      ),
+    );
+  }
 }
+

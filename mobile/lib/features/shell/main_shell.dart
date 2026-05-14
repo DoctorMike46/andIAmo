@@ -49,6 +49,7 @@ class _NavItem {
 
 const _items = <_NavItem>[
   _NavItem(Icons.explore_outlined, Icons.explore, 'Esplora'),
+  _NavItem(Icons.auto_awesome_outlined, Icons.auto_awesome, 'Chiedi'),
   _NavItem(Icons.people_outline, Icons.people, 'Amici'),
   _NavItem(Icons.celebration_outlined, Icons.celebration, 'Uscite'),
   _NavItem(Icons.person_outline, Icons.person, 'Profilo'),
